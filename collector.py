@@ -167,8 +167,19 @@ def job_resolve():
         log.warning(f"[Resolve] Error: {e}")
 
 
+def job_daily_report():
+    """Every day at 05:00 UTC — send yesterday's signal summary to Telegram."""
+    try:
+        from report import build_daily_report
+        msg = build_daily_report()
+        tg(msg)
+        log.info("[Report] Daily report sent")
+    except Exception as e:
+        log.warning(f"[Report] Daily report error: {e}")
+
+
 def job_weekly_report():
-    """Every Sunday 20:00 UTC — send performance summary to Telegram."""
+    """Every Sunday 20:00 UTC — send full weekly performance summary to Telegram."""
     try:
         from report import build_report
         msg = build_report()
@@ -209,6 +220,9 @@ def run_rsi():   job_rsi();   return jsonify({"status": "ok"}), 200
 @app.route("/run/pairs", methods=["POST"])
 def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
 
+@app.route("/run/daily", methods=["POST"])
+def run_daily(): job_daily_report(); return jsonify({"status": "ok"}), 200
+
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -240,6 +254,9 @@ def start():
 
     # Resolver — every hour at :05
     scheduler.add_job(job_resolve, "cron", minute=5, id="resolve")
+
+    # Daily report — every day at 05:00 UTC (11 PM MDT = prep for next day)
+    scheduler.add_job(job_daily_report, "cron", hour=5, minute=0, id="daily")
 
     # Weekly report — Sunday 20:00 UTC
     scheduler.add_job(job_weekly_report, "cron", day_of_week="sun", hour=20, minute=0, id="weekly")
