@@ -1,0 +1,232 @@
+"""
+Strategy Lab — Data Collector + Paper Trader
+
+Scheduled jobs:
+  Every 15 min  → fetch latest candles for all instruments/granularities → store to DB
+  08:00 UTC     → run ORB check (London open breakout)
+  Every 30 min  → run Trend check (EMA/ATR pullback)
+  Every 1H      → run RSI Reversion check
+  Every 1H      → resolve paper signals (fill outcomes)
+  Every Sunday  → weekly performance report via Telegram
+"""
+
+import os
+import logging
+from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from flask import Flask, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
+import requests
+
+from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals
+from oanda import fetch_candles, INSTRUMENTS, GRANULARITIES
+from strategies import orb, trend, rsi_reversion
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
+
+def tg(msg: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as e:
+        log.warning(f"[Telegram] {e}")
+
+
+# ── Candle collection ─────────────────────────────────────────────────────────
+
+def job_collect_candles():
+    """Fetch and store latest candles for all instruments and granularities."""
+    total = 0
+    for inst in INSTRUMENTS:
+        for gran in GRANULARITIES:
+            try:
+                count   = 200 if gran in ("M15", "H1") else 100
+                candles = fetch_candles(inst, gran, count=count)
+                stored  = insert_candles(inst, gran, candles)
+                total  += stored
+                log.info(f"[Collect] {inst} {gran} → {stored} new candles")
+            except Exception as e:
+                log.warning(f"[Collect] Failed {inst} {gran}: {e}")
+    log.info(f"[Collect] Done — {total} total new candles stored")
+
+
+# ── Strategy runners ──────────────────────────────────────────────────────────
+
+def _log_signal(sig: dict):
+    """Log a paper signal to the DB and notify via Telegram."""
+    try:
+        sig_id = log_paper_signal(
+            strategy=sig["strategy"], instrument=sig["instrument"],
+            direction=sig["direction"], entry=sig["entry"],
+            sl=sig["sl"], tp=sig["tp"],
+            sl_pips=sig["sl_pips"], tp_pips=sig["tp_pips"],
+            rr=sig["rr"], session=sig["session"], notes=sig.get("notes", ""),
+        )
+        log.info(f"[Signal] #{sig_id} {sig['strategy']} {sig['instrument']} {sig['direction']} RR={sig['rr']}")
+        tg(
+            f"📋 *Paper Signal #{sig_id}* — {sig['strategy']}\n"
+            f"{sig['instrument']} {sig['direction']}\n"
+            f"Entry: `{sig['entry']}` | SL: `{sig['sl']}` | TP: `{sig['tp']}`\n"
+            f"SL: {sig['sl_pips']}p | TP: {sig['tp_pips']}p | RR: {sig['rr']}\n"
+            f"_{sig.get('notes', '')}_"
+        )
+    except Exception as e:
+        log.error(f"[Signal] Failed to log: {e}")
+
+
+def job_orb():
+    """08:00 UTC — London ORB check."""
+    log.info("[ORB] Running London open check...")
+    for inst in INSTRUMENTS:
+        try:
+            sig = orb.check_signal(inst)
+            if sig:
+                _log_signal(sig)
+            else:
+                log.info(f"[ORB] {inst} — no breakout")
+        except Exception as e:
+            log.warning(f"[ORB] {inst} error: {e}")
+
+
+def job_trend():
+    """Every 30 min — EMA trend + ATR pullback check."""
+    log.info("[Trend] Running trend check...")
+    for inst in INSTRUMENTS:
+        try:
+            h4 = get_candles(inst, "H4", limit=250)
+            h1 = get_candles(inst, "H1", limit=50)
+            if len(h4) < 210:
+                log.info(f"[Trend] {inst} — not enough H4 data yet ({len(h4)} candles)")
+                continue
+            sig = trend.check_signal(inst, h4, h1)
+            if sig:
+                _log_signal(sig)
+        except Exception as e:
+            log.warning(f"[Trend] {inst} error: {e}")
+
+
+def job_rsi():
+    """Every 1H — RSI reversion check on 4H candles."""
+    log.info("[RSI] Running RSI check...")
+    for inst in INSTRUMENTS:
+        try:
+            h4    = get_candles(inst, "H4", limit=60)
+            daily = get_candles(inst, "D",  limit=250)
+            if len(daily) < 210:
+                log.info(f"[RSI] {inst} — not enough Daily data yet ({len(daily)} candles)")
+                continue
+            sig = rsi_reversion.check_signal(inst, h4, daily)
+            if sig:
+                _log_signal(sig)
+        except Exception as e:
+            log.warning(f"[RSI] {inst} error: {e}")
+
+
+def job_resolve():
+    """Every 1H — check if paper signals hit TP or SL."""
+    try:
+        n = resolve_signals()
+        if n > 0:
+            log.info(f"[Resolve] {n} signals resolved")
+    except Exception as e:
+        log.warning(f"[Resolve] Error: {e}")
+
+
+def job_weekly_report():
+    """Every Sunday 20:00 UTC — send performance summary to Telegram."""
+    try:
+        from report import build_report
+        msg = build_report()
+        tg(msg)
+        log.info("[Report] Weekly report sent")
+    except Exception as e:
+        log.warning(f"[Report] Error: {e}")
+
+
+# ── Flask routes ──────────────────────────────────────────────────────────────
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "strategy-lab"}), 200
+
+
+@app.route("/report", methods=["GET"])
+def report_now():
+    """Trigger a report manually."""
+    try:
+        from report import build_report
+        msg = build_report()
+        tg(msg)
+        return jsonify({"status": "sent", "report": msg}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/run/orb",   methods=["POST"])
+def run_orb():   job_orb();   return jsonify({"status": "ok"}), 200
+
+@app.route("/run/trend", methods=["POST"])
+def run_trend(): job_trend(); return jsonify({"status": "ok"}), 200
+
+@app.route("/run/rsi",   methods=["POST"])
+def run_rsi():   job_rsi();   return jsonify({"status": "ok"}), 200
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+def start():
+    log.info("[Lab] Initialising database...")
+    init_db()
+
+    log.info("[Lab] Running initial candle collection...")
+    job_collect_candles()
+
+    scheduler = BackgroundScheduler(timezone="UTC")
+
+    # Candle collection — every 15 min
+    scheduler.add_job(job_collect_candles, "cron", minute="*/15", id="collect")
+
+    # ORB — 08:00 UTC and 08:05 UTC (second chance if price slow to break)
+    scheduler.add_job(job_orb, "cron", hour=8, minute=0,  id="orb_00")
+    scheduler.add_job(job_orb, "cron", hour=8, minute=15, id="orb_15")
+    scheduler.add_job(job_orb, "cron", hour=8, minute=30, id="orb_30")
+
+    # Trend — every 30 min during London + NY (08:00–22:00 UTC)
+    scheduler.add_job(job_trend, "cron", hour="8-22", minute="0,30", id="trend")
+
+    # RSI — top of every hour
+    scheduler.add_job(job_rsi, "cron", minute=0, id="rsi")
+
+    # Resolver — every hour at :05
+    scheduler.add_job(job_resolve, "cron", minute=5, id="resolve")
+
+    # Weekly report — Sunday 20:00 UTC
+    scheduler.add_job(job_weekly_report, "cron", day_of_week="sun", hour=20, minute=0, id="weekly")
+
+    scheduler.start()
+    log.info("[Lab] Scheduler running — all jobs registered")
+
+    port = int(os.getenv("PORT", 6001))
+    log.info(f"[Lab] Flask on port {port}")
+    app.run(host="0.0.0.0", port=port)
+
+
+if __name__ == "__main__":
+    start()
