@@ -7,7 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 from contextlib import contextmanager
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 
 
 @contextmanager
