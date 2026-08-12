@@ -1,9 +1,10 @@
 """
 PostgreSQL database layer — candles + paper signals + results.
+Uses psycopg3 (psycopg) — no libpq system dependency needed.
 """
 import os
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 from contextlib import contextmanager
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -11,7 +12,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 @contextmanager
 def conn():
-    c = psycopg2.connect(DATABASE_URL, sslmode="require")
+    c = psycopg.connect(DATABASE_URL)
     try:
         yield c
         c.commit()
@@ -24,10 +25,7 @@ def conn():
 
 def init_db():
     with conn() as c:
-        cur = c.cursor()
-
-        # Candle store — deduplicated by instrument + granularity + time
-        cur.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS candles (
                 id          SERIAL PRIMARY KEY,
                 instrument  TEXT NOT NULL,
@@ -41,11 +39,9 @@ def init_db():
                 UNIQUE (instrument, granularity, time)
             )
         """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles (instrument, granularity, time DESC)")
 
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles (instrument, granularity, time DESC)")
-
-        # Paper signals — every signal a strategy would have taken
-        cur.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS paper_signals (
                 id          SERIAL PRIMARY KEY,
                 created_at  TIMESTAMPTZ DEFAULT NOW(),
@@ -60,60 +56,60 @@ def init_db():
                 rr          DOUBLE PRECISION,
                 session     TEXT,
                 notes       TEXT,
-                -- Filled in by resolver job
                 outcome     TEXT,
                 outcome_at  TIMESTAMPTZ,
                 pips        DOUBLE PRECISION,
                 resolved    BOOLEAN DEFAULT FALSE
             )
         """)
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_strategy ON paper_signals (strategy, created_at DESC)")
-
+        c.execute("CREATE INDEX IF NOT EXISTS idx_signals_strategy ON paper_signals (strategy, created_at DESC)")
         print("[DB] Tables ready")
 
 
-def insert_candles(instrument: str, granularity: str, candles: list):
-    """Upsert candles — safe to call repeatedly."""
+def insert_candles(instrument: str, granularity: str, candles: list) -> int:
     if not candles:
         return 0
     with conn() as c:
-        cur = c.cursor()
-        psycopg2.extras.execute_values(cur, """
+        rows = [(instrument, granularity, r["time"], r["open"], r["high"], r["low"], r["close"], r.get("volume", 0)) for r in candles]
+        result = c.executemany("""
             INSERT INTO candles (instrument, granularity, time, open, high, low, close, volume)
-            VALUES %s
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (instrument, granularity, time) DO NOTHING
-        """, [(
-            instrument, granularity,
-            r["time"], r["open"], r["high"], r["low"], r["close"], r.get("volume", 0)
-        ) for r in candles])
-        return cur.rowcount
+        """, rows)
+        return result.rowcount if result else 0
 
 
 def get_candles(instrument: str, granularity: str, limit: int = 200) -> list:
     with conn() as c:
-        cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
+        cur = c.execute("""
             SELECT time, open, high, low, close, volume
             FROM candles
             WHERE instrument = %s AND granularity = %s
             ORDER BY time ASC
             LIMIT %s
-        """, (instrument, granularity, limit))
-        return [dict(r) for r in cur.fetchall()]
+        """, (instrument, granularity, limit), row_factory=dict_row)
+        return cur.fetchall()
 
 
-def get_candles_range(instrument: str, granularity: str, from_dt, to_dt) -> list:
+def get_candles_range(instrument: str, granularity: str, from_dt, to_dt=None) -> list:
     with conn() as c:
-        cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
-            SELECT time, open, high, low, close, volume
-            FROM candles
-            WHERE instrument = %s AND granularity = %s
-              AND time >= %s AND time <= %s
-            ORDER BY time ASC
-        """, (instrument, granularity, from_dt, to_dt))
-        return [dict(r) for r in cur.fetchall()]
+        if to_dt:
+            cur = c.execute("""
+                SELECT time, open, high, low, close, volume
+                FROM candles
+                WHERE instrument = %s AND granularity = %s
+                  AND time >= %s AND time <= %s
+                ORDER BY time ASC
+            """, (instrument, granularity, from_dt, to_dt), row_factory=dict_row)
+        else:
+            cur = c.execute("""
+                SELECT time, open, high, low, close, volume
+                FROM candles
+                WHERE instrument = %s AND granularity = %s
+                  AND time >= %s
+                ORDER BY time ASC
+            """, (instrument, granularity, from_dt), row_factory=dict_row)
+        return cur.fetchall()
 
 
 def log_paper_signal(strategy: str, instrument: str, direction: str,
@@ -121,8 +117,7 @@ def log_paper_signal(strategy: str, instrument: str, direction: str,
                      sl_pips: float, tp_pips: float, rr: float,
                      session: str = "", notes: str = "") -> int:
     with conn() as c:
-        cur = c.cursor()
-        cur.execute("""
+        cur = c.execute("""
             INSERT INTO paper_signals
               (strategy, instrument, direction, entry, sl, tp, sl_pips, tp_pips, rr, session, notes)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -131,18 +126,15 @@ def log_paper_signal(strategy: str, instrument: str, direction: str,
         return cur.fetchone()[0]
 
 
-def resolve_signals():
-    """
-    For each unresolved paper signal, check if SL or TP was hit using stored candles.
-    Called every hour.
-    """
+def resolve_signals() -> int:
+    from datetime import timezone, datetime as dt
     with conn() as c:
-        cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
-            SELECT * FROM paper_signals
+        cur = c.execute("""
+            SELECT id, instrument, direction, entry, sl, tp, created_at
+            FROM paper_signals
             WHERE resolved = FALSE AND created_at < NOW() - INTERVAL '30 minutes'
-        """)
-        signals = [dict(r) for r in cur.fetchall()]
+        """, row_factory=dict_row)
+        signals = cur.fetchall()
 
     resolved = 0
     for sig in signals:
@@ -154,16 +146,15 @@ def resolve_signals():
         created   = sig["created_at"]
 
         pip_size = 0.1 if "XAU" in inst else 0.01 if "JPY" in inst else 0.0001
-
-        # Check M15 candles from signal time onwards (up to 48h)
-        candles = get_candles_range(inst, "M15", created, None)
-        candles = [c for c in candles if c["time"] >= created]
+        candles  = get_candles_range(inst, "M15", created)
 
         outcome = None
         outcome_at = None
         pips = None
 
         for c in candles:
+            if c["time"] < created:
+                continue
             high = c["high"]
             low  = c["low"]
             if direction == "LONG":
@@ -173,20 +164,16 @@ def resolve_signals():
                 if high >= sl: outcome = "SL"; outcome_at = c["time"]; pips = -round(abs(sl - entry) / pip_size, 1); break
                 if low  <= tp: outcome = "TP"; outcome_at = c["time"]; pips =  round(abs(entry - tp) / pip_size, 1); break
 
-        # After 48h with no hit — mark expired
-        from datetime import timezone
-        from datetime import datetime as dt
         if not outcome:
             age = (dt.now(timezone.utc) - created.replace(tzinfo=timezone.utc)).total_seconds()
             if age > 172800:
-                outcome = "EXPIRED"
+                outcome    = "EXPIRED"
                 outcome_at = dt.now(timezone.utc)
-                pips = 0.0
+                pips       = 0.0
 
         if outcome:
             with conn() as c2:
-                cur2 = c2.cursor()
-                cur2.execute("""
+                c2.execute("""
                     UPDATE paper_signals
                     SET outcome = %s, outcome_at = %s, pips = %s, resolved = TRUE
                     WHERE id = %s
