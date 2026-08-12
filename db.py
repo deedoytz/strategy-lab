@@ -71,12 +71,13 @@ def insert_candles(instrument: str, granularity: str, candles: list) -> int:
         return 0
     with conn() as c:
         rows = [(instrument, granularity, r["time"], r["open"], r["high"], r["low"], r["close"], r.get("volume", 0)) for r in candles]
-        result = c.executemany("""
+        cur = c.cursor()
+        cur.executemany("""
             INSERT INTO candles (instrument, granularity, time, open, high, low, close, volume)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (instrument, granularity, time) DO NOTHING
         """, rows)
-        return result.rowcount if result else 0
+        return cur.rowcount if cur.rowcount else 0
 
 
 def get_candles(instrument: str, granularity: str, limit: int = 200) -> list:
