@@ -23,7 +23,7 @@ import requests
 
 from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals
 from oanda import fetch_candles, INSTRUMENTS, GRANULARITIES
-from strategies import orb, trend, rsi_reversion
+from strategies import orb, trend, rsi_reversion, pairs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -139,6 +139,24 @@ def job_rsi():
             log.warning(f"[RSI] {inst} error: {e}")
 
 
+def job_pairs():
+    """Every 1H — EURUSD/GBPUSD correlation pairs trade check."""
+    log.info("[Pairs] Running pairs correlation check...")
+    try:
+        eur_h1 = get_candles("EUR_USD", "H1", limit=150)
+        gbp_h1 = get_candles("GBP_USD", "H1", limit=150)
+        if len(eur_h1) < 100 or len(gbp_h1) < 100:
+            log.info(f"[Pairs] Not enough H1 data yet (EUR={len(eur_h1)}, GBP={len(gbp_h1)})")
+            return
+        signals = pairs.check_signal(eur_h1, gbp_h1)
+        for sig in signals:
+            _log_signal(sig)
+        if not signals:
+            log.info("[Pairs] No pairs signal")
+    except Exception as e:
+        log.warning(f"[Pairs] Error: {e}")
+
+
 def job_resolve():
     """Every 1H — check if paper signals hit TP or SL."""
     try:
@@ -188,6 +206,9 @@ def run_trend(): job_trend(); return jsonify({"status": "ok"}), 200
 @app.route("/run/rsi",   methods=["POST"])
 def run_rsi():   job_rsi();   return jsonify({"status": "ok"}), 200
 
+@app.route("/run/pairs", methods=["POST"])
+def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
+
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -213,6 +234,9 @@ def start():
 
     # RSI — top of every hour
     scheduler.add_job(job_rsi, "cron", minute=0, id="rsi")
+
+    # Pairs — every hour at :10 (after candle collection at :00 and RSI at :00)
+    scheduler.add_job(job_pairs, "cron", minute=10, id="pairs")
 
     # Resolver — every hour at :05
     scheduler.add_job(job_resolve, "cron", minute=5, id="resolve")

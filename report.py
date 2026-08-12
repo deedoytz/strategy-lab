@@ -31,7 +31,7 @@ def build_report(days: int = 7) -> str:
     for r in rows:
         by_strategy[r["strategy"]].append(r)
 
-    label_map = {"ORB": "🟦 London ORB", "TREND": "🟩 EMA Trend", "RSI_REVERSION": "🟧 RSI Reversion"}
+    label_map = {"ORB": "🟦 London ORB", "TREND": "🟩 EMA Trend", "RSI_REVERSION": "🟧 RSI Reversion", "PAIRS": "🟪 Pairs Trade"}
     lines = [f"📋 *Strategy Lab — {days}-Day Report*\n_{since.strftime('%b %d')} → {datetime.now(timezone.utc).strftime('%b %d, %Y')}_\n"]
 
     grand_total = grand_wins = grand_pips = 0
