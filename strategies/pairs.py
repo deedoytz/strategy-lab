@@ -99,12 +99,12 @@ def check_signal(eur_h1_candles: list, gbp_h1_candles: list) -> list:
     lookback = 20
     spread_window = spread[-lookback:]
     spread_mean   = sum(spread_window) / len(spread_window)
-    import math
     spread_std = math.sqrt(sum((x - spread_mean)**2 for x in spread_window) / max(len(spread_window)-1, 1))
     if spread_std < 0.00005:
         return []
-    sl_spread  = spread_std * sl_threshold           # z=2.5 from mean
-    tp_spread  = spread_std * (abs(current_z) - 0.5) # revert to z=0.5
+    # Distance in spread units from current z to SL/TP levels
+    sl_spread = spread_std * (sl_threshold - abs(current_z))   # how far to z=2.5
+    tp_spread = spread_std * (abs(current_z) - 0.5)            # how far to z=0.5
 
     if current_z > entry_threshold:
         # Spread too wide → SHORT EUR, LONG GBP

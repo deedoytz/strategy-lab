@@ -95,9 +95,13 @@ def check_signal(instrument: str) -> dict | None:
         print(f"[ORB] {instrument} range too wide: {asian['range_pips']:.1f}p (max {max_range}) — anomalous day, skipping")
         return None
 
-    # Fetch the 07:00 entry candle to check for breakout via candle H/L
+    # Fetch the 07:00–08:30 entry window to detect breakout via candle H/L
+    # Use a fixed 07:00 start and current time + 1 candle as end (handles any call time)
     entry_start = now.replace(hour=7, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    entry_end   = now.replace(hour=8, minute=30, second=0, microsecond=0, tzinfo=timezone.utc)
+    entry_end   = min(
+        now.replace(hour=8, minute=30, second=0, microsecond=0, tzinfo=timezone.utc),
+        now + timedelta(minutes=15),  # don't fetch beyond present
+    )
     try:
         entry_candles = fetch_candles_range(instrument, "M15", entry_start, entry_end)
     except Exception:

@@ -259,8 +259,8 @@ def debug():
     try:
         h4 = get_candles("EUR_USD", "H4", limit=250)
         h1 = get_candles("EUR_USD", "H1", limit=50)
-        sig = trend.check_signal("EUR_USD", h4, h1) if len(h4) >= 210 else None
-        out["trend_EUR_USD"] = str(sig) if sig else ("no signal" if len(h4) >= 210 else f"not enough H4 ({len(h4)})")
+        sig = trend.check_signal("EUR_USD", h4, h1) if len(h4) >= 95 else None
+        out["trend_EUR_USD"] = str(sig) if sig else ("no signal" if len(h4) >= 95 else f"not enough H4 ({len(h4)})")
     except Exception as e:
         out["trend_EUR_USD"] = f"error: {e}"
 

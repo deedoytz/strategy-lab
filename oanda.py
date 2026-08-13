@@ -66,14 +66,22 @@ def fetch_candles_range(instrument: str, granularity: str, from_dt: datetime, to
     candles = r.json().get("candles", [])
     out = []
     for c in candles:
-        bid = c.get("bid", {})
-        ask = c.get("ask", {})
+        bid = c.get("bid") or {}
+        ask = c.get("ask") or {}
+        mid = c.get("mid") or {}
+        # Prefer ask-high / bid-low for range accuracy; fall back to mid; skip if all missing
+        h = ask.get("h") or mid.get("h")
+        l = bid.get("l") or mid.get("l")
+        o = mid.get("o") or ask.get("o") or bid.get("o")
+        cl = mid.get("c") or ask.get("c") or bid.get("c")
+        if not (h and l):
+            continue  # incomplete candle, skip
         out.append({
-            "time":      c["time"],
-            "high":      float(ask.get("h", c["mid"]["h"]) if "mid" in c else ask.get("h", 0)),
-            "low":       float(bid.get("l", c["mid"]["l"]) if "mid" in c else bid.get("l", 0)),
-            "open":      float(c["mid"]["o"]) if "mid" in c else 0,
-            "close":     float(c["mid"]["c"]) if "mid" in c else 0,
+            "time":  c["time"],
+            "high":  float(h),
+            "low":   float(l),
+            "open":  float(o) if o else 0.0,
+            "close": float(cl) if cl else 0.0,
         })
     return out
 
