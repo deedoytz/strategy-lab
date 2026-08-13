@@ -130,7 +130,7 @@ def job_trend():
         try:
             h4 = get_candles(inst, "H4", limit=250)
             h1 = get_candles(inst, "H1", limit=50)
-            if len(h4) < 210:
+            if len(h4) < 95:
                 log.info(f"[Trend] {inst} — not enough H4 data yet ({len(h4)} candles)")
                 continue
             sig = trend.check_signal(inst, h4, h1)
