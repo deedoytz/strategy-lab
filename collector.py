@@ -224,6 +224,25 @@ def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
 def run_daily(): job_daily_report(); return jsonify({"status": "ok"}), 200
 
 
+@app.route("/candles/<instrument>/<granularity>", methods=["GET"])
+def get_candles_endpoint(instrument, granularity):
+    """Query stored candles. ?from=2026-08-12T08:45:00Z&limit=20"""
+    from flask import request as req
+    from db import get_candles_range, get_candles
+    try:
+        from_str = req.args.get("from")
+        limit    = int(req.args.get("limit", 20))
+        if from_str:
+            from datetime import datetime, timezone
+            from_dt = datetime.fromisoformat(from_str.replace("Z", "+00:00"))
+            rows = get_candles_range(instrument, granularity, from_dt)[:limit]
+        else:
+            rows = get_candles(instrument, granularity, limit)
+        return jsonify([{**r, "time": str(r["time"])} for r in rows]), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 def start():
