@@ -89,12 +89,13 @@ def build_daily_report() -> str:
     until = dt.combine(today,     dt.min.time(), tzinfo=timezone.utc)
 
     with conn() as c:
-        cur = c.execute("""
+        cur = c.cursor(row_factory=dict_row)
+        cur.execute("""
             SELECT strategy, instrument, direction, rr, sl_pips, tp_pips, outcome, pips, created_at, resolved
             FROM paper_signals
             WHERE created_at >= %s AND created_at < %s
             ORDER BY created_at
-        """, (since, until), row_factory=dict_row)
+        """, (since, until))
         rows = cur.fetchall()
 
     date_label = yesterday.strftime("%A, %B %d, %Y")

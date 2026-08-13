@@ -82,34 +82,36 @@ def insert_candles(instrument: str, granularity: str, candles: list) -> int:
 
 def get_candles(instrument: str, granularity: str, limit: int = 200) -> list:
     with conn() as c:
-        cur = c.execute("""
+        cur = c.cursor(row_factory=dict_row)
+        cur.execute("""
             SELECT time, open, high, low, close, volume
             FROM candles
             WHERE instrument = %s AND granularity = %s
             ORDER BY time ASC
             LIMIT %s
-        """, (instrument, granularity, limit), row_factory=dict_row)
+        """, (instrument, granularity, limit))
         return cur.fetchall()
 
 
 def get_candles_range(instrument: str, granularity: str, from_dt, to_dt=None) -> list:
     with conn() as c:
+        cur = c.cursor(row_factory=dict_row)
         if to_dt:
-            cur = c.execute("""
+            cur.execute("""
                 SELECT time, open, high, low, close, volume
                 FROM candles
                 WHERE instrument = %s AND granularity = %s
                   AND time >= %s AND time <= %s
                 ORDER BY time ASC
-            """, (instrument, granularity, from_dt, to_dt), row_factory=dict_row)
+            """, (instrument, granularity, from_dt, to_dt))
         else:
-            cur = c.execute("""
+            cur.execute("""
                 SELECT time, open, high, low, close, volume
                 FROM candles
                 WHERE instrument = %s AND granularity = %s
                   AND time >= %s
                 ORDER BY time ASC
-            """, (instrument, granularity, from_dt), row_factory=dict_row)
+            """, (instrument, granularity, from_dt))
         return cur.fetchall()
 
 
@@ -130,11 +132,12 @@ def log_paper_signal(strategy: str, instrument: str, direction: str,
 def resolve_signals() -> int:
     from datetime import timezone, datetime as dt
     with conn() as c:
-        cur = c.execute("""
+        cur = c.cursor(row_factory=dict_row)
+        cur.execute("""
             SELECT id, instrument, direction, entry, sl, tp, created_at
             FROM paper_signals
             WHERE resolved = FALSE AND created_at < NOW() - INTERVAL '30 minutes'
-        """, row_factory=dict_row)
+        """)
         signals = cur.fetchall()
 
     resolved = 0
