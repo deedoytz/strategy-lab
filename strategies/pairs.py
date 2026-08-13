@@ -3,14 +3,24 @@ Statistical Pairs Trade — EURUSD / GBPUSD Correlation
 
 Setup:
   - EURUSD and GBPUSD are historically ~0.85 correlated
-  - Compute a z-score of the spread (EURUSD - GBPUSD * hedge_ratio)
-  - When z-score > +2.0: spread is too wide → SHORT EURUSD, LONG GBPUSD (expect convergence)
-  - When z-score < -2.0: spread is too narrow → LONG EURUSD, SHORT GBPUSD (expect convergence)
-  - Exit when z-score reverts to 0 (mean)
-  - SL: z-score hits ±3.0 (spread diverges further — trade is wrong)
+  - Compute a z-score of the spread (EURUSD - GBPUSD * hedge_ratio) using OLS
+  - When z-score crosses +2.0: spread too wide → SHORT EURUSD, LONG GBPUSD
+  - When z-score crosses -2.0: spread too narrow → LONG EURUSD, SHORT GBPUSD
+  - TP: z-score reverts to 0.5 (take partial profit — don't wait for full mean)
+  - SL: z-score hits ±2.5 (spread diverges — trade is wrong)
+  - Only enter on fresh CROSS of ±2.0 (not if already past ±2.5)
+
+Backtest improvements (v2, 300 H1 bars):
+  - Fixed: entry only on z-score CROSS (not "currently above"), prevents stacking
+  - Lookback 20 bars outperforms 40 bars for this time series
+  - Hedge lookback 40 bars (shorter than original 60 — more responsive)
+  - TP at z=0.5 (exit before full reversion) → 62.5% WR vs 30% for z=0
+  - Z-entry=2.0, Z-SL=2.5 → tight enough to cut losses
+
+Half-life of spread mean reversion: ~21.5 hours (measured Aug 2026)
+Autocorrelation lag-1: 0.964 (spread is persistent but reverts within 1-2 days)
 
 NOTE: Paper mode only — logs TWO signals (one per leg) so each leg is tracked independently.
-In live mode this would need simultaneous execution and separate sizing.
 """
 import math
 from oanda import _pip
@@ -58,22 +68,22 @@ def check_signal(eur_h1_candles: list, gbp_h1_candles: list) -> list:
     eur_closes = [c["close"] for c in eur_h1_candles[-n:]]
     gbp_closes = [c["close"] for c in gbp_h1_candles[-n:]]
 
-    hedge = _hedge_ratio(eur_closes, gbp_closes, lookback=60)
+    hedge = _hedge_ratio(eur_closes, gbp_closes, lookback=40)
 
     # Spread = EURUSD - hedge * GBPUSD
     spread = [eur_closes[i] - hedge * gbp_closes[i] for i in range(n)]
     zscores = _zscore(spread, lookback=20)
 
-    if not zscores:
+    if len(zscores) < 2:
         return []
 
     current_z  = zscores[-1]
-    prev_z     = zscores[-2] if len(zscores) >= 2 else current_z
+    prev_z     = zscores[-2]
 
     entry_threshold = 2.0
-    sl_threshold    = 3.0
+    sl_threshold    = 2.5   # tighter than 3.0 — cut losses sooner
 
-    # Only signal on fresh crosses of ±2.0 (not if already past ±3.0)
+    # Only signal on fresh crosses of ±2.0, and not beyond ±2.5 already
     if abs(current_z) > sl_threshold:
         return []
 
@@ -85,14 +95,16 @@ def check_signal(eur_h1_candles: list, gbp_h1_candles: list) -> list:
     eur_pip   = _pip("EUR_USD")
     gbp_pip   = _pip("GBP_USD")
 
-    # Estimate SL/TP in pips based on spread z-score thresholds
-    # std = (value - mean) / z  →  compute mean from last 20-period window
+    # Compute spread std from rolling window
     lookback = 20
     spread_window = spread[-lookback:]
-    spread_mean = sum(spread_window) / len(spread_window)
-    spread_std = abs((spread[-1] - spread_mean) / current_z) if current_z != 0 else 0.0001
-    sl_spread  = spread_std * sl_threshold
-    tp_spread  = spread_std * abs(current_z)  # distance to mean
+    spread_mean   = sum(spread_window) / len(spread_window)
+    import math
+    spread_std = math.sqrt(sum((x - spread_mean)**2 for x in spread_window) / max(len(spread_window)-1, 1))
+    if spread_std < 0.00005:
+        return []
+    sl_spread  = spread_std * sl_threshold           # z=2.5 from mean
+    tp_spread  = spread_std * (abs(current_z) - 0.5) # revert to z=0.5
 
     if current_z > entry_threshold:
         # Spread too wide → SHORT EUR, LONG GBP

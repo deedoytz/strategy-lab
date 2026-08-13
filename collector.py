@@ -141,18 +141,20 @@ def job_trend():
 
 
 def job_rsi():
-    """Every 1H — RSI reversion check on 4H candles."""
+    """Every 1H — RSI trend-pullback check on 4H candles."""
     log.info("[RSI] Running RSI check...")
     for inst in INSTRUMENTS:
         try:
-            h4    = get_candles(inst, "H4", limit=60)
-            daily = get_candles(inst, "D",  limit=250)
-            if len(daily) < 210:
-                log.info(f"[RSI] {inst} — not enough Daily data yet ({len(daily)} candles)")
+            h4    = get_candles(inst, "H4", limit=120)
+            daily = get_candles(inst, "D",  limit=10)   # unused by new strategy, kept for signature
+            if len(h4) < 100:
+                log.info(f"[RSI] {inst} — not enough H4 data yet ({len(h4)} candles)")
                 continue
             sig = rsi_reversion.check_signal(inst, h4, daily)
             if sig:
                 _log_signal(sig)
+            else:
+                log.info(f"[RSI] {inst} — no pullback signal")
         except Exception as e:
             log.warning(f"[RSI] {inst} error: {e}")
 
