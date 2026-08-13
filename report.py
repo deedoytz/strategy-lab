@@ -3,21 +3,21 @@ Weekly performance report — queries paper_signals table and builds summary.
 """
 from datetime import datetime, timezone, timedelta
 from db import conn
-import psycopg2.extras
+from psycopg.rows import dict_row
 
 
 def build_report(days: int = 7) -> str:
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
     with conn() as c:
-        cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = c.cursor(row_factory=dict_row)
         cur.execute("""
             SELECT strategy, instrument, direction, rr, outcome, pips, created_at
             FROM paper_signals
             WHERE created_at >= %s AND resolved = TRUE
             ORDER BY strategy, created_at
         """, (since,))
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = cur.fetchall()
 
         cur.execute("SELECT COUNT(*) AS n FROM paper_signals WHERE resolved = FALSE AND created_at >= %s", (since,))
         pending = cur.fetchone()["n"]
