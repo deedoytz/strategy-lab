@@ -224,6 +224,37 @@ def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
 def run_daily(): job_daily_report(); return jsonify({"status": "ok"}), 200
 
 
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Show candle counts and run a strategy dry-run."""
+    from db import get_candles
+    out = {}
+    for inst in INSTRUMENTS:
+        out[inst] = {}
+        for gran in GRANULARITIES:
+            rows = get_candles(inst, gran, limit=300)
+            out[inst][gran] = len(rows)
+
+    # Try trend on EUR_USD
+    try:
+        h4 = get_candles("EUR_USD", "H4", limit=250)
+        h1 = get_candles("EUR_USD", "H1", limit=50)
+        sig = trend.check_signal("EUR_USD", h4, h1) if len(h4) >= 210 else None
+        out["trend_EUR_USD"] = str(sig) if sig else ("no signal" if len(h4) >= 210 else f"not enough H4 ({len(h4)})")
+    except Exception as e:
+        out["trend_EUR_USD"] = f"error: {e}"
+
+    try:
+        eur = get_candles("EUR_USD", "H1", limit=150)
+        gbp = get_candles("GBP_USD", "H1", limit=150)
+        sigs = pairs.check_signal(eur, gbp) if len(eur) >= 100 else []
+        out["pairs"] = [str(s) for s in sigs] if sigs else f"no signal (EUR={len(eur)}, GBP={len(gbp)})"
+    except Exception as e:
+        out["pairs"] = f"error: {e}"
+
+    return jsonify(out), 200
+
+
 @app.route("/candles/<instrument>/<granularity>", methods=["GET"])
 def get_candles_endpoint(instrument, granularity):
     """Query stored candles. ?from=2026-08-12T08:45:00Z&limit=20"""
