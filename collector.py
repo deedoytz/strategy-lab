@@ -49,6 +49,21 @@ def tg(msg: str):
         log.warning(f"[Telegram] {e}")
 
 
+# ── Historical backfill ───────────────────────────────────────────────────────
+
+def _backfill_history():
+    """Fetch deep history on startup so strategies have enough candles to run."""
+    counts = {"M15": 500, "H1": 500, "H4": 500, "D": 500}
+    for inst in INSTRUMENTS:
+        for gran, count in counts.items():
+            try:
+                candles = fetch_candles(inst, gran, count=count)
+                stored  = insert_candles(inst, gran, candles)
+                log.info(f"[Backfill] {inst} {gran} → {stored} new candles (fetched {len(candles)})")
+            except Exception as e:
+                log.warning(f"[Backfill] {inst} {gran}: {e}")
+
+
 # ── Candle collection ─────────────────────────────────────────────────────────
 
 def job_collect_candles():
@@ -280,6 +295,8 @@ def start():
     log.info("[Lab] Initialising database...")
     init_db()
 
+    log.info("[Lab] Running historical backfill...")
+    _backfill_history()
     log.info("[Lab] Running initial candle collection...")
     job_collect_candles()
 
