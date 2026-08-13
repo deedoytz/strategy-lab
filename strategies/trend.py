@@ -77,12 +77,12 @@ def check_signal(instrument: str, h4_candles: list, h1_candles: list) -> dict | 
     if not ema20_1h:
         return None
 
-    prev_1h   = h1_candles[-2]
-    last_1h   = h1_candles[-1]
-    ema20_now = ema20_1h[-1]
+    prev_1h    = h1_candles[-2]
+    last_1h    = h1_candles[-1]
+    ema20_prev = ema20_1h[-2] if len(ema20_1h) >= 2 else ema20_1h[-1]
 
-    # Pullback: previous candle touched EMA20, last candle closed back in trend direction
-    touched_ema = (prev_1h["low"] <= ema20_now <= prev_1h["high"])
+    # Pullback: previous candle touched EMA20 (use EMA value at that bar), last candle closed back in trend direction
+    touched_ema = (prev_1h["low"] <= ema20_prev <= prev_1h["high"])
 
     if direction == "LONG":
         confirmed = touched_ema and last_1h["close"] > last_1h["open"]

@@ -84,11 +84,13 @@ def get_candles(instrument: str, granularity: str, limit: int = 200) -> list:
     with conn() as c:
         cur = c.cursor(row_factory=dict_row)
         cur.execute("""
-            SELECT time, open, high, low, close, volume
-            FROM candles
-            WHERE instrument = %s AND granularity = %s
-            ORDER BY time ASC
-            LIMIT %s
+            SELECT time, open, high, low, close, volume FROM (
+                SELECT time, open, high, low, close, volume
+                FROM candles
+                WHERE instrument = %s AND granularity = %s
+                ORDER BY time DESC
+                LIMIT %s
+            ) sub ORDER BY time ASC
         """, (instrument, granularity, limit))
         return cur.fetchall()
 
@@ -113,6 +115,21 @@ def get_candles_range(instrument: str, granularity: str, from_dt, to_dt=None) ->
                 ORDER BY time ASC
             """, (instrument, granularity, from_dt))
         return cur.fetchall()
+
+
+def signal_exists_today(strategy: str, instrument: str) -> bool:
+    """Return True if a signal for this strategy+instrument was already logged today (UTC)."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("""
+            SELECT 1 FROM paper_signals
+            WHERE strategy = %s AND instrument = %s
+              AND created_at >= %s::date
+            LIMIT 1
+        """, (strategy, instrument, str(today)))
+        return cur.fetchone() is not None
 
 
 def log_paper_signal(strategy: str, instrument: str, direction: str,
@@ -169,7 +186,8 @@ def resolve_signals() -> int:
                 if low  <= tp: outcome = "TP"; outcome_at = c["time"]; pips =  round(abs(entry - tp) / pip_size, 1); break
 
         if not outcome:
-            age = (dt.now(timezone.utc) - created.replace(tzinfo=timezone.utc)).total_seconds()
+            created_aware = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            age = (dt.now(timezone.utc) - created_aware).total_seconds()
             if age > 172800:
                 outcome    = "EXPIRED"
                 outcome_at = dt.now(timezone.utc)

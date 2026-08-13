@@ -101,11 +101,12 @@ def check_signal(instrument: str, h4_candles: list, daily_candles: list) -> dict
 
     if direction == "LONG":
         sl    = swing_low - buf
-        # TP: midpoint between current price and recent swing high (RSI 50 zone)
-        tp    = last_close + (swing_high - last_close) * 0.6
+        tp_target = swing_high if swing_high > last_close else last_close + (last_close - swing_low) * 0.6
+        tp    = last_close + (tp_target - last_close) * 0.6
     else:
         sl    = swing_high + buf
-        tp    = last_close - (last_close - swing_low) * 0.6
+        tp_target = swing_low if swing_low < last_close else last_close - (swing_high - last_close) * 0.6
+        tp    = last_close - (last_close - tp_target) * 0.6
 
     sl_pips = abs(last_close - sl) / pip
     tp_pips = abs(tp - last_close) / pip

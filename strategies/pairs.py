@@ -86,8 +86,11 @@ def check_signal(eur_h1_candles: list, gbp_h1_candles: list) -> list:
     gbp_pip   = _pip("GBP_USD")
 
     # Estimate SL/TP in pips based on spread z-score thresholds
-    # SL at z=3.0, TP at z=0 — approximate pip distances from spread volatility
-    spread_std = abs(spread[-1] / current_z) if current_z != 0 else 0.0001
+    # std = (value - mean) / z  →  compute mean from last 20-period window
+    lookback = 20
+    spread_window = spread[-lookback:]
+    spread_mean = sum(spread_window) / len(spread_window)
+    spread_std = abs((spread[-1] - spread_mean) / current_z) if current_z != 0 else 0.0001
     sl_spread  = spread_std * sl_threshold
     tp_spread  = spread_std * abs(current_z)  # distance to mean
 

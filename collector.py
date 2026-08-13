@@ -21,7 +21,7 @@ from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 
-from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals
+from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals, signal_exists_today
 from oanda import fetch_candles, INSTRUMENTS, GRANULARITIES
 from strategies import orb, trend, rsi_reversion, pairs
 
@@ -111,6 +111,9 @@ def job_orb():
     log.info("[ORB] Running London open check...")
     for inst in INSTRUMENTS:
         try:
+            if signal_exists_today("ORB", inst):
+                log.info(f"[ORB] {inst} — already signalled today, skipping")
+                continue
             sig = orb.check_signal(inst)
             if sig:
                 _log_signal(sig)
