@@ -128,6 +128,9 @@ def job_trend():
     log.info("[Trend] Running trend check...")
     for inst in INSTRUMENTS:
         try:
+            if signal_exists_today("TREND", inst):
+                log.info(f"[Trend] {inst} — already signalled today, skipping")
+                continue
             h4 = get_candles(inst, "H4", limit=250)
             h1 = get_candles(inst, "H1", limit=50)
             if len(h4) < 95:
@@ -145,6 +148,9 @@ def job_rsi():
     log.info("[RSI] Running RSI check...")
     for inst in INSTRUMENTS:
         try:
+            if signal_exists_today("RSI_REVERSION", inst):
+                log.info(f"[RSI] {inst} — already signalled today, skipping")
+                continue
             h4    = get_candles(inst, "H4", limit=120)
             daily = get_candles(inst, "D",  limit=10)   # unused by new strategy, kept for signature
             if len(h4) < 100:
