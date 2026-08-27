@@ -148,9 +148,6 @@ def job_rsi():
     log.info("[RSI] Running RSI check...")
     for inst in INSTRUMENTS:
         try:
-            if signal_exists_today("RSI_REVERSION", inst):
-                log.info(f"[RSI] {inst} — already signalled today, skipping")
-                continue
             h4    = get_candles(inst, "H4", limit=120)
             daily = get_candles(inst, "D",  limit=10)   # unused by new strategy, kept for signature
             if len(h4) < 100:
@@ -158,6 +155,9 @@ def job_rsi():
                 continue
             sig = rsi_reversion.check_signal(inst, h4, daily)
             if sig:
+                if signal_exists_today("RSI_REVERSION", inst, sig["direction"]):
+                    log.info(f"[RSI] {inst} {sig['direction']} — already signalled today, skipping")
+                    continue
                 _log_signal(sig)
             else:
                 log.info(f"[RSI] {inst} — no pullback signal")

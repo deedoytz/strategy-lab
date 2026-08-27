@@ -117,18 +117,26 @@ def get_candles_range(instrument: str, granularity: str, from_dt, to_dt=None) ->
         return cur.fetchall()
 
 
-def signal_exists_today(strategy: str, instrument: str) -> bool:
-    """Return True if a signal for this strategy+instrument was already logged today (UTC)."""
+def signal_exists_today(strategy: str, instrument: str, direction: str = "") -> bool:
+    """Return True if a signal for this strategy+instrument (optionally direction) was already logged today (UTC)."""
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).date()
     with conn() as c:
         cur = c.cursor()
-        cur.execute("""
-            SELECT 1 FROM paper_signals
-            WHERE strategy = %s AND instrument = %s
-              AND created_at >= %s::date
-            LIMIT 1
-        """, (strategy, instrument, str(today)))
+        if direction:
+            cur.execute("""
+                SELECT 1 FROM paper_signals
+                WHERE strategy = %s AND instrument = %s AND direction = %s
+                  AND created_at >= %s::date
+                LIMIT 1
+            """, (strategy, instrument, direction, str(today)))
+        else:
+            cur.execute("""
+                SELECT 1 FROM paper_signals
+                WHERE strategy = %s AND instrument = %s
+                  AND created_at >= %s::date
+                LIMIT 1
+            """, (strategy, instrument, str(today)))
         return cur.fetchone() is not None
 
 
