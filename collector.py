@@ -21,12 +21,9 @@ from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 
-from db import (
-    init_db, insert_candles, get_candles, log_paper_signal, resolve_signals, signal_exists_today,
-    add_manual_signal, get_manual_signals, manual_signal_exists,
-)
+from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals, signal_exists_today
 from oanda import fetch_candles, INSTRUMENTS, GRANULARITIES
-from strategies import orb, trend, rsi_reversion, pairs, manual_monitor
+from strategies import orb, trend, rsi_reversion, pairs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -50,33 +47,6 @@ def tg(msg: str):
         )
     except Exception as e:
         log.warning(f"[Telegram] {e}")
-
-
-# ── Manual signal seeding ─────────────────────────────────────────────────────
-# Externally-sourced calls (e.g. a signal-provider Telegram post) to track.
-# "Pips" in this provider's notation = whole XAU_USD price points, not the
-# 0.1 pip used internally by oanda.py — so targets are entry-mid ± N points.
-
-GOLD_SIGNALS = [
-    {"entry_low": 4442, "entry_high": 4444, "sl": 4434, "tp_points": (50, 100, 200, 500)},
-    {"entry_low": 4453, "entry_high": 4455, "sl": 4447, "tp_points": (50, 100, 200, 500)},
-]
-
-
-def _seed_gold_signals():
-    for s in GOLD_SIGNALS:
-        if manual_signal_exists("XAU_USD", s["entry_low"], s["entry_high"], s["sl"]):
-            continue
-        mid = (s["entry_low"] + s["entry_high"]) / 2
-        tp1_lo, tp1_hi, tp2_pts, tp3_pts = s["tp_points"]
-        sig_id = add_manual_signal(
-            instrument="XAU_USD", direction="LONG",
-            entry_low=s["entry_low"], entry_high=s["entry_high"], sl=s["sl"],
-            tp1_low=mid + tp1_lo, tp1_high=mid + tp1_hi,
-            tp2=mid + tp2_pts, tp3=mid + tp3_pts,
-            source="telegram_signal", notes="Seeded gold BUY signal",
-        )
-        log.info(f"[ManualSeed] #{sig_id} BUY GOLD {s['entry_low']}-{s['entry_high']} SL {s['sl']}")
 
 
 # ── Historical backfill ───────────────────────────────────────────────────────
@@ -213,36 +183,6 @@ def job_pairs():
         log.warning(f"[Pairs] Error: {e}")
 
 
-def job_manual_monitor():
-    """Every 5 min — check manually-registered signals (e.g. Telegram calls) against live price."""
-    instruments = {s["instrument"] for s in get_manual_signals(open_only=True)}
-    for inst in instruments:
-        try:
-            for ev in manual_monitor.check_signals(inst):
-                _notify_manual_event(inst, ev)
-        except Exception as e:
-            log.warning(f"[ManualMonitor] {inst} error: {e}")
-
-
-def _notify_manual_event(instrument: str, ev: dict):
-    sig   = ev["signal"]
-    kind  = ev["event"]
-    price = ev["price"]
-    label = {
-        "FILLED": "🟡 Entry filled",
-        "TP1":    "✅ TP1 hit",
-        "TP2":    "✅ TP2 hit",
-        "TP3":    "🎯 TP3 hit — signal closed",
-        "SL":     "🛑 Stop loss hit — signal closed",
-    }.get(kind, kind)
-    log.info(f"[ManualMonitor] #{sig['id']} {instrument} {sig['direction']} {kind} @ {price}")
-    tg(
-        f"{label}\n"
-        f"*{instrument}* {sig['direction']} (entry {sig['entry_low']}-{sig['entry_high']})\n"
-        f"Price: `{price}`"
-    )
-
-
 def job_resolve():
     """Every 1H — check if paper signals hit TP or SL."""
     try:
@@ -309,42 +249,6 @@ def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
 @app.route("/run/daily", methods=["POST"])
 def run_daily(): job_daily_report(); return jsonify({"status": "ok"}), 200
 
-@app.route("/run/manual", methods=["POST"])
-def run_manual(): job_manual_monitor(); return jsonify({"status": "ok"}), 200
-
-
-@app.route("/signals/manual", methods=["GET"])
-def list_manual_signals():
-    """?instrument=XAU_USD&all=1 (all=1 includes CLOSED)"""
-    from flask import request as req
-    inst = req.args.get("instrument")
-    open_only = req.args.get("all") != "1"
-    rows = get_manual_signals(instrument=inst, open_only=open_only)
-    return jsonify([{k: (str(v) if hasattr(v, "isoformat") else v) for k, v in r.items()} for r in rows]), 200
-
-
-@app.route("/signals/manual", methods=["POST"])
-def create_manual_signal():
-    """Register a new externally-sourced signal to monitor.
-    Body: {instrument, direction, entry_low, entry_high, sl, tp1_low, tp1_high, tp2, tp3, notes}"""
-    from flask import request as req
-    body = req.get_json(force=True, silent=True) or {}
-    required = ["instrument", "direction", "entry_low", "entry_high", "sl"]
-    missing = [f for f in required if f not in body]
-    if missing:
-        return jsonify({"error": f"missing fields: {missing}"}), 400
-    try:
-        sig_id = add_manual_signal(
-            instrument=body["instrument"], direction=body["direction"],
-            entry_low=body["entry_low"], entry_high=body["entry_high"], sl=body["sl"],
-            tp1_low=body.get("tp1_low"), tp1_high=body.get("tp1_high"),
-            tp2=body.get("tp2"), tp3=body.get("tp3"),
-            source=body.get("source", "manual"), notes=body.get("notes", ""),
-        )
-        return jsonify({"status": "ok", "id": sig_id}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 @app.route("/debug", methods=["GET"])
 def debug():
@@ -402,9 +306,6 @@ def start():
     log.info("[Lab] Initialising database...")
     init_db()
 
-    log.info("[Lab] Seeding manual signals...")
-    _seed_gold_signals()
-
     log.info("[Lab] Running historical backfill...")
     _backfill_history()
     log.info("[Lab] Running initial candle collection...")
@@ -431,9 +332,6 @@ def start():
 
     # Resolver — every hour at :05
     scheduler.add_job(job_resolve, "cron", minute=5, id="resolve")
-
-    # Manual signal monitor — every 5 min (target hits are time-sensitive)
-    scheduler.add_job(job_manual_monitor, "interval", minutes=5, id="manual_monitor")
 
     # Daily report — every day at 05:00 UTC (11 PM MDT = prep for next day)
     scheduler.add_job(job_daily_report, "cron", hour=5, minute=0, id="daily")
