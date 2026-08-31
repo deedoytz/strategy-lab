@@ -63,7 +63,80 @@ def init_db():
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_signals_strategy ON paper_signals (strategy, created_at DESC)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS manual_signals (
+                id          SERIAL PRIMARY KEY,
+                created_at  TIMESTAMPTZ DEFAULT NOW(),
+                source      TEXT,
+                instrument  TEXT NOT NULL,
+                direction   TEXT NOT NULL,
+                entry_low   DOUBLE PRECISION NOT NULL,
+                entry_high  DOUBLE PRECISION NOT NULL,
+                sl          DOUBLE PRECISION NOT NULL,
+                tp1_low     DOUBLE PRECISION,
+                tp1_high    DOUBLE PRECISION,
+                tp2         DOUBLE PRECISION,
+                tp3         DOUBLE PRECISION,
+                notes       TEXT,
+                status      TEXT DEFAULT 'PENDING',
+                filled_at   TIMESTAMPTZ,
+                tp1_hit_at  TIMESTAMPTZ,
+                tp2_hit_at  TIMESTAMPTZ,
+                tp3_hit_at  TIMESTAMPTZ,
+                sl_hit_at   TIMESTAMPTZ
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_manual_signals_open ON manual_signals (instrument, status)")
         print("[DB] Tables ready")
+
+
+def manual_signal_exists(instrument: str, entry_low: float, entry_high: float, sl: float) -> bool:
+    """Dedup guard so re-running the seed on every deploy doesn't insert duplicates."""
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("""
+            SELECT 1 FROM manual_signals
+            WHERE instrument = %s AND entry_low = %s AND entry_high = %s AND sl = %s
+            LIMIT 1
+        """, (instrument, entry_low, entry_high, sl))
+        return cur.fetchone() is not None
+
+
+def add_manual_signal(instrument: str, direction: str, entry_low: float, entry_high: float, sl: float,
+                       tp1_low: float = None, tp1_high: float = None, tp2: float = None, tp3: float = None,
+                       source: str = "manual", notes: str = "") -> int:
+    with conn() as c:
+        cur = c.execute("""
+            INSERT INTO manual_signals
+              (source, instrument, direction, entry_low, entry_high, sl, tp1_low, tp1_high, tp2, tp3, notes)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+        """, (source, instrument, direction, entry_low, entry_high, sl, tp1_low, tp1_high, tp2, tp3, notes))
+        return cur.fetchone()[0]
+
+
+def get_manual_signals(instrument: str = None, open_only: bool = True) -> list:
+    with conn() as c:
+        cur = c.cursor(row_factory=dict_row)
+        query = "SELECT * FROM manual_signals WHERE 1=1"
+        params = []
+        if instrument:
+            query += " AND instrument = %s"
+            params.append(instrument)
+        if open_only:
+            query += " AND status != 'CLOSED'"
+        query += " ORDER BY created_at DESC"
+        cur.execute(query, params)
+        return cur.fetchall()
+
+
+def update_manual_signal(signal_id: int, **fields) -> None:
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k} = %s" for k in fields)
+    with conn() as c:
+        c.execute(f"UPDATE manual_signals SET {set_clause} WHERE id = %s", (*fields.values(), signal_id))
 
 
 def insert_candles(instrument: str, granularity: str, candles: list) -> int:
