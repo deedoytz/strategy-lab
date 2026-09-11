@@ -224,10 +224,12 @@ def health():
 
 @app.route("/report", methods=["GET"])
 def report_now():
-    """Trigger a report manually."""
+    """Trigger a report manually. Pass ?days=N for custom window."""
     try:
         from report import build_report
-        msg = build_report()
+        from flask import request as req
+        days = int(req.args.get("days", 7))
+        msg = build_report(days=days)
         tg(msg)
         return jsonify({"status": "sent", "report": msg}), 200
     except Exception as e:
