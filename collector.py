@@ -23,7 +23,7 @@ import requests
 
 from db import init_db, insert_candles, get_candles, log_paper_signal, resolve_signals, signal_exists_today
 from oanda import fetch_candles, INSTRUMENTS, GRANULARITIES
-from strategies import orb, trend, rsi_reversion, pairs
+from strategies import orb, trend, rsi_reversion, pairs, gold_ny
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -183,6 +183,22 @@ def job_pairs():
         log.warning(f"[Pairs] Error: {e}")
 
 
+def job_gold_ny():
+    """13:00 UTC — Gold NY session momentum check."""
+    log.info("[GoldNY] Running NY open breakout check...")
+    try:
+        if signal_exists_today("GOLD_NY", "XAU_USD"):
+            log.info("[GoldNY] Already signalled today, skipping")
+            return
+        sig = gold_ny.check_signal()
+        if sig:
+            _log_signal(sig)
+        else:
+            log.info("[GoldNY] No breakout signal")
+    except Exception as e:
+        log.warning(f"[GoldNY] Error: {e}")
+
+
 def job_resolve():
     """Every 1H — check if paper signals hit TP or SL."""
     try:
@@ -247,6 +263,10 @@ def run_rsi():   job_rsi();   return jsonify({"status": "ok"}), 200
 
 @app.route("/run/pairs", methods=["POST"])
 def run_pairs(): job_pairs(); return jsonify({"status": "ok"}), 200
+
+@app.route("/run/gold_ny", methods=["POST"])
+def run_gold_ny(): job_gold_ny(); return jsonify({"status": "ok"}), 200
+
 
 @app.route("/run/daily", methods=["POST"])
 def run_daily(): job_daily_report(); return jsonify({"status": "ok"}), 200
@@ -333,6 +353,11 @@ def start():
     scheduler.add_job(job_pairs, "cron", minute=10, id="pairs")
 
     # Resolver — every hour at :05
+    # Gold NY momentum — fires 13:00, 13:15, 13:30 UTC (NY open window)
+    scheduler.add_job(job_gold_ny, "cron", hour=13, minute=0,  id="gold_ny_00")
+    scheduler.add_job(job_gold_ny, "cron", hour=13, minute=15, id="gold_ny_15")
+    scheduler.add_job(job_gold_ny, "cron", hour=13, minute=30, id="gold_ny_30")
+
     scheduler.add_job(job_resolve, "cron", minute=5, id="resolve")
 
     # Daily report — every day at 05:00 UTC (11 PM MDT = prep for next day)
